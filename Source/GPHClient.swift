@@ -166,7 +166,6 @@ public typealias GPHCompletionHandler<T> = (_ response: T?, _ error: Error?) -> 
                                     completionHandler: @escaping GPHCompletionHandler<GPHMediaResponse>) -> Operation {
     
         let request = GPHRequestRouter.get(id).asURLRequest(apiKey)
-        
         return self.getRequest(with: request, type: .get, media: .gif, completionHandler: completionHandler)
     }
     
@@ -183,7 +182,7 @@ public typealias GPHCompletionHandler<T> = (_ response: T?, _ error: Error?) -> 
     
         let request = GPHRequestRouter.getAll(ids).asURLRequest(apiKey)
         
-        return self.listRequest(with: request, type: .getAll, media: .gif, completionHandler: completionHandler)
+        return self.listRequestById(with: request, type: .get, media: .gif, id: ids[0], completionHandler: completionHandler)
     }
     
     //MARK: Categories Endpoint
@@ -339,6 +338,21 @@ public typealias GPHCompletionHandler<T> = (_ response: T?, _ error: Error?) -> 
                                       type: .channel,
                                       media: media,
                                       completionHandler: completionHandler)
+    }
+    
+    @objc
+    public func cancel() {
+        self.requestQueue.cancelAllOperations();
+    }
+    
+    @objc
+    public func cancelByThisId(id: String) {
+        for operation in self.requestQueue.operations {
+            if operation.name == id
+            {
+                operation.cancel();
+            }
+        }
     }
 
 }

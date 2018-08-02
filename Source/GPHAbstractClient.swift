@@ -113,6 +113,16 @@ import Foundation
         return operation
     }
     
+    @objc
+    @discardableResult func httpRequest(with request: URLRequest, type: GPHRequestType, id: String?, completionHandler: @escaping GPHJSONCompletionHandler) -> Operation {
+        
+        let operation = GPHRequest(self, request: request, type: type, completionHandler: completionHandler)
+        operation.name = id;
+        self.requestQueue.addOperation(operation)
+        
+        return operation
+    }
+    
 
     /// Perform a request to get a single result
     ///
@@ -147,6 +157,17 @@ import Foundation
 
         return self.httpRequest(with: request,
                                 type: type,
+                                completionHandler: GPHAbstractClient.parseJSONResponse(type: type,
+                                                                                       media: media,
+                                                                                       completionHandler: completionHandler))
+    }
+    
+    @objc
+    @discardableResult func listRequestById(with request: URLRequest, type: GPHRequestType, media: GPHMediaType, id: String, completionHandler: @escaping GPHCompletionHandler<GPHListMediaResponse>) -> Operation {
+        
+        return self.httpRequest(with: request,
+                                type: type,
+                                id: id,
                                 completionHandler: GPHAbstractClient.parseJSONResponse(type: type,
                                                                                        media: media,
                                                                                        completionHandler: completionHandler))
