@@ -9,9 +9,6 @@ Pod::Spec.new do |s|
     s.author   = { 'Giphy' => 'giphy@giphy.com' }
     s.source = { :git => 'https://github.com/Giphy/giphy-ios-sdk-core.git', :tag => s.version }
     s.ios.deployment_target = '8.0'
-    s.osx.deployment_target = '10.10'
-    s.tvos.deployment_target = '9.0'
-    s.watchos.deployment_target = '2.0'
 
     s.source_files = [
         'Source/*.swift',
