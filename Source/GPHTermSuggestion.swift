@@ -14,7 +14,7 @@ import Foundation
 
 /// Represents a Giphy Term Suggestion
 ///
-@objcMembers public class GPHTermSuggestion: NSObject, NSCoding {
+@objcMembers public class GPHTermSuggestion: GPHFilterable, NSCoding {
     // MARK: Properties
 
     /// Term suggestion.
@@ -22,6 +22,9 @@ import Foundation
     
     /// JSON Representation.
     public fileprivate(set) var jsonRepresentation: GPHJSONObject?
+    
+    /// User Dictionary to Store data in Obj by the Developer
+    public var userDictionary: [String: Any]?
     
     // MARK: Initializers
     
@@ -42,11 +45,13 @@ import Foundation
         
         self.init(term)
         self.jsonRepresentation = aDecoder.decodeObject(forKey: "jsonRepresentation") as? GPHJSONObject
+        self.userDictionary = aDecoder.decodeObject(forKey: "userDictionary") as? [String: Any]
     }
     
     public func encode(with aCoder: NSCoder) {
         aCoder.encode(self.term, forKey: "term")
         aCoder.encode(self.jsonRepresentation, forKey: "jsonRepresentation")
+        aCoder.encode(self.userDictionary, forKey: "userDictionary")
     }
     
     // MARK: NSObject
@@ -86,20 +91,16 @@ extension GPHTermSuggestion {
 extension GPHTermSuggestion: GPHMappable {
     
     /// This is where the magic/mapping happens + error handling.
-    static func mapData(_ root: GPHTermSuggestion?,
-                               data jsonData: GPHJSONObject,
-                               request requestType: GPHRequestType,
-                               media mediaType: GPHMediaType = .gif,
-                               rendition renditionType: GPHRenditionType = .original) throws -> GPHTermSuggestion {
+    public static func mapData(_ data: GPHJSONObject, options: [String: Any?]) throws -> GPHTermSuggestion {
         
         guard
-            let term = jsonData["name"] as? String
+            let term = data["name"] as? String
             else {
-                throw GPHJSONMappingError(description: "Couldn't map GPHTermSuggestion for \(jsonData)")
+                throw GPHJSONMappingError(description: "Couldn't map GPHTermSuggestion for \(data)")
         }
         
         let obj = GPHTermSuggestion(term)
-        obj.jsonRepresentation = jsonData
+        obj.jsonRepresentation = data
         return obj
     }
     

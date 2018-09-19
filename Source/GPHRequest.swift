@@ -12,88 +12,162 @@
 
 import Foundation
 
-/// Represents a Giphy URLRequest Type
-///
-@objc public enum GPHRequestType: Int {
-    /// Search Request.
-    case search
-    
-    /// Trending Request.
-    case trending
-    
-    /// Translate Request.
-    case translate
-    
-    /// Random Item Request.
-    case random
-    
-    /// Get an Item with ID.
-    case get
-    
-    /// Get items with IDs.
-    case getAll
-    
-    /// Get Term Suggestions.
-    case termSuggestions
-    
-    /// Top Categories.
-    case categories
-    
-    /// SubCategories of a Category.
-    case subCategories
-
-    /// Category Content.
-    case categoryContent
-    
-    /// Get Channel by id.
-    case channel
-    
-    /// Get Channel Children (sub Channels).
-    case channelChildren
-    
-    /// Get Channel Gifs (media).
-    case channelContent
-}
-
-
 /// Async Request Operations with Completion Handler Support
 ///
-class GPHRequest: GPHAsyncOperationWithCompletion {
+@objcMembers public class GPHRequest: GPHAsyncOperationWithCompletion {
     // MARK: Properties
 
-    /// URLRequest obj to handle the networking.
-    var request: URLRequest
+    /// Config to form requests.
+    var config: GPHRequestConfig
     
     /// The client to which this request is related.
     let client: GPHAbstractClient
     
-    /// Type of the request so we do some edge-case handling (JSON/Mapping etc)
-    /// More than anything so we can map JSON > GPH objs.
-    let type: GPHRequestType
+    var lastRequestStartedAt: Date? = nil
     
+    private var retryLimit = 3
+    private var retryCount = 0
+    private var retryDelay = 1.0
+    private var retryDelayPower = 2.0
+    
+    var hasRequestInFlight: Bool = false
+    
+    // This flag isn't set until we've receive at least a first response -
+    // even if it was empty.
+    var hasReceivedAResponse: Bool = false
+    
+    // This flag is set IFF we have received a failure more recently
+    // than a response.
+    var hasReceivedAFailure: Bool = false
+    
+    // This flag is set IFF we have received an empty response, which
+    // should indicate that we have "bottomed out" in the paging.
+    var hasReceivedEmptyResponse: Bool = false
     
     // MARK: Initializers
     
     /// Convenience Initializer
     ///
     /// - parameter client: GPHClient object to handle the request.
-    /// - parameter request: URLRequest to execute.
-    /// - parameter type: Request type (GPHRequestType).
+    /// - parameter config: GPHRequestConfig to formulate request(s).
     /// - parameter completionHandler: GPHJSONCompletionHandler to return JSON or Error.
     ///
-    init(_ client: GPHAbstractClient, request: URLRequest, type: GPHRequestType, completionHandler: @escaping GPHJSONCompletionHandler) {
+    init(_ client: GPHAbstractClient, config: GPHRequestConfig, completionHandler: @escaping GPHJSONCompletionHandler) {
         self.client = client
-        self.request = request
-        self.type = type
+        self.config = config
+        self.retryLimit = config.retry
         super.init(completionHandler: completionHandler)
     }
+    
+    func resetRequest(fireEventImmediately: Bool) {
+        
+        hasReceivedAResponse = false
+        hasReceivedEmptyResponse = false
+        hasReceivedAFailure = false
+        hasRequestInFlight = false
+        
+        lastRequestStartedAt = nil
+        
+        newRequest(force: true)
+        
+        if fireEventImmediately {
+            self.callCompletion(data: nil, response: nil, error: GPHHTTPError(statusCode:101, description: "Reset Request"))
+        }
+        
+    }
+    
+    func scheduleRetry() {
+        
+        if self.hasRequestInFlight && state != .finished {
+            // A retry is already scheduled, so ignore.
+            return
+        }
+        
+        retryCount += 1
+        
+        // Our retry adopts a simple "exponential backoff" algorithm.
+        // Essentially we wait for the square of the retry count, in seconds,
+        // although we could tune this if we wanted to.
+        // e.g. After the first failure, we wait 1 second,
+        // after the second we wait 4 seconds,
+        // after the third we wait 9 seconds, etc.
+        let retryDelaySeconds = retryDelay * pow(Double(retryCount), retryDelayPower)
+        DispatchQueue.main.asyncAfter(deadline: .now() + retryDelaySeconds) {
+            self.newRequestFired()
+        }
+    }
+    
+    func cancelRetry() {
+        self.state = .finished
+    }
+    
+    func newRequestFired() {
+        newRequest(force: true)
+    }
+    
+    
+    // Initiate a new request if necessary.
+    //
+    // 1) If force is YES, always create a new request.
+    // 2) If force is NO, do not create a new request if there is already a pending retry.
+    @discardableResult func newRequest(force: Bool) -> Bool {
+        
+//        print("New Request retryCount:\(retryCount)")
+        if force {
+            cancelRetry()
+            hasRequestInFlight = false
+        }
+
+        if hasRequestInFlight {
+            // There already is a request in flight.
+            return false
+        }
+
+        hasRequestInFlight = true
+        lastRequestStartedAt = Date()
+        
+        self.start()
+        return true
+    }
+    
+    func succesfulRequest(data: GPHJSONObject?, response: URLResponse?, error: Error?) {
+
+        self.cancelRetry()
+        self.retryCount = 0
+
+        self.hasRequestInFlight = false
+        self.hasReceivedAFailure = false
+        self.hasReceivedAResponse = true
+        
+        self.state = .finished
+        self.callCompletion(data: data, response: response, error: error)
+    }
+    
+    func failedRequest(retry: Bool = false, data: GPHJSONObject?, response: URLResponse?, error: Error?) {
+        
+        self.hasRequestInFlight = false
+        self.hasReceivedAFailure = true
+
+        if retry {
+            if retryCount < retryLimit {
+                self.state = .finished
+                self.scheduleRetry()
+                return
+            }
+        }
+        
+        self.retryCount = 0
+        self.state = .finished
+        self.callCompletion(data: data, response: response, error: error)
+    }
+    
     
     // MARK: Operation function
     
     /// Override the Operation function main to handle the request
     ///
-    override func main() {
-        client.session.dataTask(with: request) { data, response, error in
+    override public func main() {
+        client.session.dataTask(with: config.getRequest()) { data, response, error in
             
             if self.isCancelled {
                 return
@@ -101,14 +175,14 @@ class GPHRequest: GPHAsyncOperationWithCompletion {
             
             #if !os(watchOS)
                 if !self.client.isNetworkReachable() {
-                    self.callCompletion(data: nil, response: response, error: GPHHTTPError(statusCode:100, description: "Network is not reachable"))
+                    self.failedRequest(retry: true, data: nil, response: response, error: GPHHTTPError(statusCode:100, description: "Network is not reachable"))
                     return
                 }
             #endif
 
             do {
                 guard let data = data else {
-                    self.callCompletion(data: nil, response: response, error:GPHJSONMappingError(description: "Can not map API response to JSON, there is no data"))
+                    self.failedRequest(retry: true, data: nil, response: response, error:GPHJSONMappingError(description: "Can not map API response to JSON, there is no data"))
                     return
                 }
                 
@@ -126,82 +200,104 @@ class GPHRequest: GPHAsyncOperationWithCompletion {
                         let errorMessage = (result["meta"] as? GPHJSONObject)?["msg"] as? String
                         // Prep the error
                         let errorAPIorHTTP = GPHHTTPError(statusCode: statusCode, description: errorMessage)
-                        self.callCompletion(data: result, response: response, error: errorAPIorHTTP)
-                        self.state = .finished
+                        self.failedRequest(retry: false, data: result, response: response, error: errorAPIorHTTP)
                         return
                     }
-                    self.callCompletion(data: result, response: response, error: error)
+                    self.succesfulRequest(data: result, response: response, error: error)
+                    
                 } else {
-                    self.callCompletion(data: nil, response: response, error: GPHJSONMappingError(description: "Can not map API response to JSON"))
+                    self.failedRequest(retry: false, data: nil, response: response, error: GPHJSONMappingError(description: "Can not map API response to JSON"))
                 }
             } catch {
-                self.callCompletion(data: nil, response: response, error: error)
+                self.failedRequest(retry: false, data: nil, response: response, error: error)
             }
-            
-            self.state = .finished
             
         }.resume()
     }
 }
 
 
+/// Request Type for URLRequest objects.
+///
+public enum GPHRequestType: String {
+    
+    /// POST request
+    case post = "POST"
+    
+    /// GET Request
+    case get = "GET"
+    
+    /// PUT Request
+    case put = "PUT"
+    
+    /// DELETE Request
+    case delete = "DELETE"
+
+    /// UPLOAD Request
+    case upload = "UPLOAD"
+}
+
 /// Router to generate URLRequest objects.
 ///
-enum GPHRequestRouter {
-    // MARK: Properties
-
-    /// Search endpoint: query, type, offset, limit, rating, lang, pingbackUserId
-    case search(String, GPHMediaType, Int, Int, GPHRatingType, GPHLanguageType, String?)
+public enum GPHRequestRouter {
+    /// MARK: Properties
     
-    /// Trending endpoint: type, offset, limit, rating
-    case trending(GPHMediaType, Int, Int, GPHRatingType)
-    
-    /// Translate endpoint: term, type, rating, lang
-    case translate(String, GPHMediaType, GPHRatingType, GPHLanguageType)
-    
-    /// Random endpoint: query, type, rating
-    case random(String, GPHMediaType, GPHRatingType)
-    
-    /// Get object endpoint: id
-    case get(String)
-    
-    /// Get objects endpoint: ids
-    case getAll([String])
-    
-    /// Term Suggestions endpoint: term to query
-    case termSuggestions(String)
-    
-    /// Categories endpoint: type, offset, limit
-    case categories(GPHMediaType, Int, Int, String)
-    
-    /// Categories endpoint for subcategories: category, type, offset, limit
-    case subCategories(String, GPHMediaType, Int, Int, String)
-    
-    /// Category content endpoint: category, type, offset, limit, rating, lang
-    case categoryContent(String, GPHMediaType, Int, Int, GPHRatingType, GPHLanguageType)
-    
-    /// Get a channel by id endpoint: id, offset, limit
-    case channel(Int)
-    
-    /// Get channel children endpoint: id, offset, limit
-    case channelChildren(Int, Int, Int)
-    
-    /// Get channel gifs+stickers endpoint: id, offset, limit
-    case channelContent(Int, Int, Int)
-    
-    /// Base endpoint url.
-    static let baseURLString = "https://api.giphy.com/v1/"
+    /// Setup the Request: Path, Method, Parameters, Headers)
+    case request(String, String, GPHRequestType, [URLQueryItem]?, [String: String]?)
     
     /// HTTP Method type.
-    var method: String {
+    var method: GPHRequestType {
         switch self {
-        default: return "GET"
-        // in future when we have upload / auth / we will add PUT, DELETE, POST here
+        case .request(_, _, let method, _, _):
+            return method
+        }
+    }
+    
+    /// Full URL
+    var url: URL {
+        switch self {
+        case .request(let base, let path, _, _, _):
+            let baseUrl = URL(string: base)!
+            return baseUrl.appendingPathComponent(path)
+        }
+    }
+    
+    /// Query Parameters
+    var query: [URLQueryItem] {
+        switch self {
+        case .request(_, _, _, let queryItems, _):
+            return queryItems ?? []
+        }
+    }
+    
+    /// Custom Headers
+    var headers: [String: String] {
+        switch self {
+        case .request(_, _, _, _, let customHeaders):
+            return customHeaders ?? [:]
         }
     }
     
     // MARK: Helper functions
     
+    /// Encode a URLQueryItem for including in HTTP requests
+    /// (encodes + signs correctly to %2B)
+    ///
+    /// - parameter queryItem: URLQueryItem to be encoded.
+    /// - returns: a URLQueryItem whose value is correctly percent-escaped.
+    ///
+    public func encodedURLQueryItem(_ queryItem: URLQueryItem) -> URLQueryItem {
+        var allowedCharacters: CharacterSet = CharacterSet.urlQueryAllowed
+        
+        // Removing the characters that AlamoFire removes to match behaviour:
+        // https://github.com/Alamofire/Alamofire/blob/master/Source/ParameterEncoding.swift#L236
+        
+        allowedCharacters.remove(charactersIn: ":#[]@!$&'()*+,;=")
+        let encodedValue = queryItem.value?.addingPercentEncoding(withAllowedCharacters: allowedCharacters)
+        return URLQueryItem(name: queryItem.name, value: encodedValue)
+    }
+    
+
     /// Construct the request from url, method and parameters.
     ///
     /// - parameter apiKey: Api-key for the request.
@@ -209,100 +305,48 @@ enum GPHRequestRouter {
     ///
     public func asURLRequest(_ apiKey: String) -> URLRequest {
         
-        // Build the request endpoint
-        var queryItems:[URLQueryItem] = []
+        var queryItems = query
         queryItems.append(URLQueryItem(name: "api_key", value: apiKey))
         
-        let url: URL = {
-            let relativePath: String?
-            switch self {
-            case .search(let query, let type, let offset, let limit, let rating, let lang, let pingbackUserId):
-                relativePath = "\(type.rawValue)s/search"
-                queryItems.append(URLQueryItem(name: "q", value: query))
-                queryItems.append(URLQueryItem(name: "offset", value: "\(offset)"))
-                queryItems.append(URLQueryItem(name: "limit", value: "\(limit)"))
-                queryItems.append(URLQueryItem(name: "rating", value: rating.rawValue))
-                queryItems.append(URLQueryItem(name: "lang", value: lang.rawValue))
-                if let pbId = pingbackUserId {
-                    queryItems.append(URLQueryItem(name: "pingback_id", value: pbId))
-                }
-            case .trending(let type, let offset, let limit, let rating):
-                relativePath = "\(type.rawValue)s/trending"
-                queryItems.append(URLQueryItem(name: "offset", value: "\(offset)"))
-                queryItems.append(URLQueryItem(name: "limit", value: "\(limit)"))
-                queryItems.append(URLQueryItem(name: "rating", value: rating.rawValue))
-            case .translate(let term, let type, let rating, let lang):
-                relativePath = "\(type.rawValue)s/translate"
-                queryItems.append(URLQueryItem(name: "s", value: term))
-                queryItems.append(URLQueryItem(name: "rating", value: rating.rawValue))
-                queryItems.append(URLQueryItem(name: "lang", value: lang.rawValue))
-            case .random(let query, let type, let rating):
-                relativePath = "\(type.rawValue)s/random"
-                queryItems.append(URLQueryItem(name: "tag", value: query))
-                queryItems.append(URLQueryItem(name: "rating", value: rating.rawValue))
-            case .get(let id):
-                relativePath = "gifs/\(id)"
-            case .getAll(let ids):
-                queryItems.append(URLQueryItem(name: "ids", value: ids.flatMap({$0}).joined(separator:",")))
-                relativePath = "gifs"
-            case .termSuggestions(let term):
-                relativePath = "queries/suggest/\(term)"
-            case .categories(let type, let offset, let limit, let sort):
-                relativePath = "\(type.rawValue)s/categories"
-                queryItems.append(URLQueryItem(name: "sort", value: "\(sort)"))
-                queryItems.append(URLQueryItem(name: "offset", value: "\(offset)"))
-                queryItems.append(URLQueryItem(name: "limit", value: "\(limit)"))
-            case .subCategories(let category, let type, let offset, let limit, let sort):
-                relativePath = "\(type.rawValue)s/categories/\(category)"
-                queryItems.append(URLQueryItem(name: "sort", value: "\(sort)"))
-                queryItems.append(URLQueryItem(name: "offset", value: "\(offset)"))
-                queryItems.append(URLQueryItem(name: "limit", value: "\(limit)"))
-            case .categoryContent(let category, let type, let offset, let limit, let rating, let lang):
-                relativePath = "\(type.rawValue)s/categories/\(category)"
-                queryItems.append(URLQueryItem(name: "offset", value: "\(offset)"))
-                queryItems.append(URLQueryItem(name: "limit", value: "\(limit)"))
-                queryItems.append(URLQueryItem(name: "rating", value: rating.rawValue))
-                queryItems.append(URLQueryItem(name: "lang", value: lang.rawValue))
-            case .channel(let id):
-                relativePath = "stickers/packs/\(id)"
-            case .channelChildren(let id, let offset, let limit):
-                relativePath = "stickers/packs/\(id)/children"
-                queryItems.append(URLQueryItem(name: "offset", value: "\(offset)"))
-                queryItems.append(URLQueryItem(name: "limit", value: "\(limit)"))
-            case .channelContent(let id, let offset, let limit):
-                relativePath = "stickers/packs/\(id)/stickers"
-                queryItems.append(URLQueryItem(name: "offset", value: "\(offset)"))
-                queryItems.append(URLQueryItem(name: "limit", value: "\(limit)"))
-            }
-            
-            var url = URL(string: GPHRequestRouter.baseURLString)!
-            if let path = relativePath {
-                url = url.appendingPathComponent(path)
-            }
-            
-            var urlComponents = URLComponents(string: url.absoluteString)
-            urlComponents?.queryItems = queryItems
-            guard let fullUrl = urlComponents?.url else { return url }
-            
-            return fullUrl
-        }()
-        
-        // Set up request parameters.
-        let parameters: GPHJSONObject? = {
-            switch self {
-            default: return nil
-            // in future when we have upload / auth / we will add PUT, DELETE, POST here
+        // Get the final url
+        let finalUrl: URL = {
+            switch method {
+            case .get:
+                var urlComponents = URLComponents(string: url.absoluteString)
+                urlComponents?.queryItems = queryItems
+                guard let fullUrl = urlComponents?.url else { return url }
+                return fullUrl
+            default:
+                return url
             }
         }()
         
         // Create the request.
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.addValue("application/json", forHTTPHeaderField: "content-type")
-        if let parameters = parameters,
-            let data = try? JSONSerialization.data(withJSONObject: parameters, options: []) {
-            request.httpBody = data
+        var request = URLRequest(url: finalUrl)
+        request.httpMethod = (method == .upload ? "POST" : method.rawValue)
+        
+        // Add the custom headers.
+        for (header, value) in headers {
+            request.addValue(value, forHTTPHeaderField: header)
         }
+        
+        switch method {
+        case .post, .delete, .put:
+            // Set up request parameters.
+            request.addValue("application/x-www-form-urlencoded", forHTTPHeaderField: "content-type")
+            
+            var urlComponents = URLComponents(string: url.absoluteString)
+            let encodedQueryItems: [URLQueryItem] = queryItems.map { queryItem in
+                return encodedURLQueryItem(queryItem)
+            }
+            urlComponents?.queryItems = encodedQueryItems
+            request.httpBody = (urlComponents?.query ?? "").data(using: String.Encoding.utf8)
+        case .get:
+            request.addValue("application/json", forHTTPHeaderField: "content-type")
+        default:
+            break
+        }
+        
         return request
     }
 }

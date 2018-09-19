@@ -20,12 +20,17 @@ import Foundation
     /// Total Result Count.
     public private(set) var totalCount: Int
     
-    /// Returned Result Count (not always == limit)
+    /// Actual Result Count (not always == limit)
     public private(set) var count: Int
+
+    /// Returned (if Filters applied) Result Count (not always == limit)
+    public private(set) var filteredCount: Int
     
     /// Offset to start next set of results.
     public private(set) var offset: Int
     
+    /// Next Page token
+    public private(set) var nextCursor: String?
     
     // MARK: Initializers
     
@@ -34,6 +39,7 @@ import Foundation
     override public init() {
         self.totalCount = 0
         self.count = 0
+        self.filteredCount = 0
         self.offset = 0
         super.init()
     }
@@ -44,11 +50,17 @@ import Foundation
     /// - parameter count: Number of results returned.
     /// - parameter offset: Current offset of the result set.
     ///
-    convenience init(_ totalCount: Int, count: Int, offset: Int) {
+    convenience init(_ totalCount: Int, count: Int, offset: Int, nextCursor: String? = nil) {
         self.init()
         self.totalCount = totalCount
         self.count = count
+        self.filteredCount = count
         self.offset = offset
+        self.nextCursor = nextCursor
+    }
+    
+    public func updateFilteredCount(_ count: Int) {
+        self.filteredCount = count
     }
     
 }
@@ -72,23 +84,19 @@ extension GPHPagination {
 extension GPHPagination: GPHMappable {
     
     /// This is where the magic/mapping happens + error handling.
-    static func mapData(_ root: GPHPagination?,
-                               data jsonData: GPHJSONObject,
-                               request requestType: GPHRequestType,
-                               media mediaType: GPHMediaType = .gif,
-                               rendition renditionType: GPHRenditionType = .original) throws -> GPHPagination {
+    public static func mapData(_ data: GPHJSONObject, options: [String: Any?]) throws -> GPHPagination {
         
         guard
-            let count = jsonData["count"] as? Int
+            let count = data["count"] as? Int
         else {
-            throw GPHJSONMappingError(description: "Couldn't map GPHPagination for \(jsonData)")
+            throw GPHJSONMappingError(description: "Couldn't map GPHPagination for \(data)")
         }
         
-        let totalCount = jsonData["total_count"] as? Int ?? count
-        let offset = jsonData["offset"] as? Int ?? 0
+        let totalCount = data["total_count"] as? Int ?? count
+        let offset = data["offset"] as? Int ?? 0
+        let nextCursor = data["next_cursor"] as? String ?? data["next_page"] as? String
         
-        let obj = GPHPagination(totalCount, count: count, offset: offset)
-        return obj
+        return GPHPagination(totalCount, count: count, offset: offset, nextCursor: nextCursor)
     }
     
 }

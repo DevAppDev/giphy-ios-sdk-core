@@ -14,58 +14,47 @@ import Foundation
 
 /// Protocol to Map JSON > GPH Objects.
 /// Make sure Models implement this protocol to be able to map JSON>Obj
-protocol GPHMappable {
-    
-    /// Generic Root object.
-    associatedtype GPHRootObject
+public protocol GPHMappable {
     
     /// Generic Mappable object to return.
     associatedtype GPHMappableObject
     
-    
     /// Static function for mapping JSON to objects.
     ///
-    /// - parameter root: root object to be used for passing extra data
-    /// - parameter data: GPHJSONObect data to be mapped
-    /// - parameter request: request type to manipulate the data (if .search vs .translate, mapping will be different)
-    /// - parameter media: media type, GIF|Sticker|...
-    /// - parameter rendition: rendition type
+    /// - parameter options: Dictionary of options (type, root object, media...)
     /// - returns: object: Self
     ///
-    static func mapData(_ root: GPHRootObject?,
-                        data jsonData: GPHJSONObject,
-                        request requestType: GPHRequestType,
-                        media mediaType: GPHMediaType,
-                        rendition renditionType: GPHRenditionType) throws -> GPHMappableObject
-    
+    static func mapData(_ data: GPHJSONObject, options: [String: Any?]) throws -> GPHMappableObject
 }
-
 
 // MARK: Extension -- Parsing Helper Implementations
 
 /// Extend protocol to have default behavior
 /// We will use this to map JSON to particular types of objs we want like Date, URL, ...
-extension GPHMappable {
+public extension GPHMappable {
     
     /// Map a String to a Date.
     ///
     /// - parameter date: String version of the Date to be mapped to Date type
     /// - returns: a Date object or nil
     ///
-    static func parseDate(_ date: String?) -> Date? {
-        if let date = date {
-            //"2013-03-21 04:03:08"
-            // "2016-07-13 21:50:57",
-            let dateFormatter = DateFormatter()
-            dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-            if let dateObj = dateFormatter.date(from:date) {
-                let calendar = Calendar.current
-                let components = calendar.dateComponents([.year, .month, .day, .hour], from: dateObj)
-                return calendar.date(from:components)
+    public static func parseDate(_ date: String?) -> Date? {
+        //"2013-03-21 04:03:08" "2018-06-05T21:46:37.525Z" "2018-08-02T12:00:00Z"
+        let dateFormats = ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "yyyy-MM-dd'T'HH:mm:ss'Z'"]
+        for format in dateFormats {
+            if let parsedDate = parseDate(date, format: format) {
+                return parsedDate
             }
-            return nil
         }
         return nil
+    }
+    
+    public static func parseDate(_ date: String?, format: String) -> Date? {
+        guard let date = date else { return nil }
+        let dateFormatter = DateFormatter.standardDateFormatter
+        dateFormatter.timeZone = TimeZone(abbreviation: "UTC") ?? TimeZone.current
+        dateFormatter.dateFormat = format
+        return dateFormatter.date(from: date)
     }
 
     /// Map a String to a URL.
@@ -73,7 +62,7 @@ extension GPHMappable {
     /// - parameter urk: String version of the URL to be mapped to URL type
     /// - returns: a Date object or nil
     ///
-    static func parseURL(_ url: String?) -> URL? {
+    public static func parseURL(_ url: String?) -> URL? {
         if let url = url {
             return URL(string: url)
         }
@@ -86,7 +75,7 @@ extension GPHMappable {
     /// - parameter rating: String version of the rating to be mapped to GPHRatingType type
     /// - returns: a GPHRatingType object or nil
     ///
-    static func parseRating(_ rating: String?) -> GPHRatingType {
+    public static func parseRating(_ rating: String?) -> GPHRatingType {
         if let rating = rating {
             return GPHRatingType(rawValue: rating) ?? .unrated
         }
@@ -99,11 +88,21 @@ extension GPHMappable {
     /// - parameter number: String version of the Int to be mapped to Int type
     /// - returns: a Int object or nil
     ///
-    static func parseInt(_ number: String?) -> Int? {
+    public static func parseInt(_ number: String?) -> Int? {
         if let number = number {
             return Int(number)
         }
         return nil
     }
+}
 
+// MARK: Extension -- DateFormatter
+
+/// Create a more performant static instance of DateFormatter
+
+extension DateFormatter {
+    fileprivate static let standardDateFormatter: DateFormatter = {
+        let dateFormatter = DateFormatter()
+        return dateFormatter
+    }()
 }
